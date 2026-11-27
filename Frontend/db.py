@@ -59,9 +59,95 @@ def sign_up(pseudo, password, preference="Les deux"):
         return False, str(e)
 
 
+T_USERS = "utilisateurs"
+T_FAV = "favoris"
+T_NOTE = {"film": "critique_film", "jeu": "critique_jeu"}
+T_LATER = "a_voir_plus_tard"
+COL = {"film": "id_film", "jeu": "id_jeu"}
+
+_user_id = None
+
+
+def current_user_id():
+    return _user_id
+
+
 def sign_in(pseudo, password):
+    global _user_id
     try:
         client().auth.sign_in_with_password({"email": _email(pseudo), "password": password})
+        pseudo = pseudo.strip()
+        rows = client().table(T_USERS).select("id_utilisateur").eq("pseudo", pseudo).execute().data
+        if not rows:
+            rows = client().table(T_USERS).insert(
+                {"pseudo": pseudo, "mot_de_passe": "géré par Supabase Auth"}
+            ).execute().data
+        _user_id = rows[0]["id_utilisateur"]
         return True, None
     except Exception as e:
+        print("Erreur connexion :", e)
         return False, "Pseudo ou mot de passe incorrect."
+
+def get_favorites(kind):
+    col = COL[kind]
+    try:
+        rows = (client().table(T_FAV).select(col)
+                .eq("id_utilisateur", _user_id).not_.is_(col, "null").execute().data)
+        return {r[col] for r in rows}
+    except Exception as e:
+        print("Erreur get_favorites :", e)
+        return set()
+
+
+def toggle_favorite(kind, item_id):
+    """Ajoute ou retire un favori. Renvoie True si c'est maintenant un favori."""
+    col = COL[kind]
+    try:
+        q = client().table(T_FAV).select("id_favori").eq("id_utilisateur", _user_id).eq(col, item_id)
+        existing = q.execute().data
+        if existing:
+            client().table(T_FAV).delete().eq("id_favori", existing[0]["id_favori"]).execute()
+            return False
+        client().table(T_FAV).insert(
+            {"id_utilisateur": _user_id, col: item_id, "favoris": True}
+        ).execute()
+        return True
+    except Exception as e:
+        print("Erreur toggle_favorite :", e)
+        return None
+
+def save_rating(kind, item_id, note, commentaire=None):
+    col = COL[kind]
+    try:
+        client().table(T_NOTE[kind]).upsert(
+            {"id_utilisateur": _user_id, col: item_id, "note": note, "commentaire": commentaire},
+            on_conflict=f"id_utilisateur,{col}",
+        ).execute()
+        return True
+    except Exception as e:
+        print("Erreur save_rating :", e)
+        return False
+
+
+def get_rating(kind, item_id):
+    col = COL[kind]
+    try:
+        rows = (client().table(T_NOTE[kind]).select("note")
+                .eq("id_utilisateur", _user_id).eq(col, item_id).execute().data)
+        return rows[0]["note"] if rows else 0
+    except Exception as e:
+        print("Erreur get_rating :", e)
+        return 0
+
+
+def add_watchlist(kind, item_id):
+    col = COL[kind]
+    try:
+        exists = (client().table(T_LATER).select(col)
+                  .eq("id_utilisateur", _user_id).eq(col, item_id).execute().data)
+        if not exists:
+            client().table(T_LATER).insert({"id_utilisateur": _user_id, col: item_id}).execute()
+        return True
+    except Exception as e:
+        print("Erreur add_watchlist :", e)
+        return False

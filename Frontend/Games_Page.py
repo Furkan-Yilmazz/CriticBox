@@ -1,5 +1,12 @@
+import queue
+import threading
+from io import BytesIO
+from urllib.request import Request, urlopen
+
 from customtkinter import *
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
+
+from db import get_games
 
 # ───────────────────────────────────────────────
 # Configuration
@@ -11,27 +18,36 @@ BG = "#0f0f0f"
 PANEL = "#1a1a1a"
 GREY = "#2a2a2a"
 
-# Liste des jeux : vide pour l'instant
-# Format : (titre, note, plateformes, couleur du haut, couleur du bas)
-GAMES = []
+COVER_SIZE = (130, 190)
 
 
-def make_gradient(size, top, bottom, radius=8):
-    """Crée une image avec un dégradé vertical et des coins arrondis."""
-    w, h = size
-    img = Image.new("RGB", (w, h))
-    draw = ImageDraw.Draw(img)
-    t = tuple(int(top[i:i + 2], 16) for i in (1, 3, 5))
-    b = tuple(int(bottom[i:i + 2], 16) for i in (1, 3, 5))
-    for y in range(h):
-        ratio = y / (h - 1)
-        color = tuple(int(t[k] + (b[k] - t[k]) * ratio) for k in range(3))
-        draw.line([(0, y), (w, y)], fill=color)
-    mask = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius, fill=255)
+def rounded(img, radius=8):
+    """Applique des coins arrondis à une image."""
     img = img.convert("RGBA")
+    mask = Image.new("L", img.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, img.width - 1, img.height - 1], radius, fill=255
+    )
     img.putalpha(mask)
     return img
+
+
+def placeholder(size=COVER_SIZE):
+    """Image grise affichée en attendant la jaquette (ou si elle ne charge pas)."""
+    return rounded(Image.new("RGB", size, "#262626"))
+
+
+def download_image(url, size=COVER_SIZE):
+    """Télécharge une jaquette et la recadre à la taille voulue. None si échec."""
+    try:
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=8) as response:
+            data = response.read()
+        img = Image.open(BytesIO(data)).convert("RGB")
+        return rounded(ImageOps.fit(img, size, Image.LANCZOS))
+    except Exception as error:
+        print("Jaquette non chargée :", url, "-", error)
+        return None
 
 
 # ───────────────────────────────────────────────
@@ -80,32 +96,41 @@ class Sidebar(CTkFrame):
 # Carte de jeu
 # ───────────────────────────────────────────────
 class GameCard(CTkFrame):
-    COVER_SIZE = (130, 190)
-
-    def __init__(self, master, title, rating, platforms, color_top, color_bottom):
+    def __init__(self, master, game):
+        """game : dictionnaire d'une ligne de la table Supabase `jeu_video`."""
         super().__init__(master, width=150, fg_color=PANEL, corner_radius=8)
-        self.title_text = title
+
+        self.game = game
         self.is_favorite = False
 
-        image = CTkImage(make_gradient(self.COVER_SIZE, color_top, color_bottom),
-                         size=self.COVER_SIZE)
-        self.cover = CTkLabel(self, image=image, text=title, compound="center",
-                              font=("Arial", 13, "bold"), text_color="white",
-                              wraplength=100)
+        titre = game.get("nom_jeu", "")
+        annee = (game.get("date_sortie") or "")[:4]
+        plateformes = game.get("platform") or ""
+        infos = " · ".join(x for x in (annee, plateformes) if x)
+
+        self.cover = CTkLabel(
+            self, text=titre, compound="center",
+            image=CTkImage(placeholder(), size=COVER_SIZE),
+            font=("Arial", 13, "bold"), text_color="white", wraplength=100
+        )
         self.cover.pack(padx=10, pady=(10, 8))
 
         self.heart_btn = CTkButton(self, text="♡", width=22, height=22, corner_radius=11,
-                                   fg_color="#0f0f0f", hover_color=GREY,
-                                   font=("Arial", 12))
-        self.heart_btn.place(x=self.COVER_SIZE[0] - 14, y=18)
+                                   fg_color="#0f0f0f", hover_color=GREY, font=("Arial", 12))
+        self.heart_btn.place(x=COVER_SIZE[0] - 14, y=18)
 
-        self.name_label = CTkLabel(self, text=title, font=("Arial", 11, "bold"),
+        self.name_label = CTkLabel(self, text=titre, font=("Arial", 11, "bold"),
                                    text_color="white", wraplength=130)
         self.name_label.pack(pady=(0, 2))
 
-        self.info_label = CTkLabel(self, text=f"★ {rating} · {platforms}",
-                                   font=("Arial", 9), text_color="#9a9a9a")
+        # wraplength : la liste des plateformes peut être longue
+        self.info_label = CTkLabel(self, text=infos, font=("Arial", 9),
+                                   text_color="#9a9a9a", wraplength=130)
         self.info_label.pack(pady=(0, 10))
+
+    def set_poster(self, pil_image):
+        """Affiche la vraie jaquette (appelé quand le téléchargement est fini)."""
+        self.cover.configure(image=CTkImage(pil_image, size=COVER_SIZE), text="")
 
 
 # ───────────────────────────────────────────────
@@ -121,36 +146,61 @@ class MainContent(CTkFrame):
         self.header = CTkFrame(self, fg_color="transparent")
         self.header.pack(fill="x", padx=25, pady=(25, 0))
 
+        self.title_label = CTkLabel(self.header, text="Ma collection de jeux",
+                                    font=("Arial", 24, "bold"), text_color="white")
+        self.title_label.pack(side="left")
 
         self.avatar = CTkButton(self.header, text="👤", width=36, height=36, corner_radius=18,
                                 fg_color="#3a3a3a", hover_color="#4a4a4a")
         self.avatar.pack(side="right", anchor="n")
 
-        self.subtitle_label = CTkLabel(self, text="Découvrez nos meilleurs titres de la catégorie Survie",
+        self.subtitle_label = CTkLabel(self, text="Chargement des jeux...",
                                        font=("Arial", 11), text_color="#9a9a9a")
         self.subtitle_label.pack(anchor="w", padx=25, pady=(0, 12))
-
-        # Filtres
-        self.filters = CTkFrame(self, fg_color="transparent")
-        self.filters.pack(anchor="w", padx=25, pady=(0, 15))
-        for text in ("Plateforme ▾", "Note ▾", "Année ▾", "Trier : Populaires ▾"):
-            CTkButton(self.filters, text=text, height=26, corner_radius=13,
-                      fg_color=PANEL, hover_color=GREY, font=("Arial", 10),
-                      width=len(text) * 7 + 20).pack(side="left", padx=(0, 8))
 
         # Grille de cartes
         self.grid_frame = CTkFrame(self, fg_color="transparent")
         self.grid_frame.pack(anchor="nw", padx=25)
-        self.cards = []
-        for game in GAMES:
-            self.add_game(*game)
 
-    def add_game(self, title, rating, platforms, color_top, color_bottom):
+        self.cards = []
+        self.poster_queue = queue.Queue()
+        self.after(100, self.load_games)
+
+    def load_games(self):
+        games = get_games()
+        self.subtitle_label.configure(
+            text=f"{len(games)} jeux dans votre collection" if games
+            else "Aucun jeu trouvé (vérifie la connexion Supabase)"
+        )
+        for game in games:
+            self.add_game(game)
+
+        # Téléchargement des jaquettes en arrière-plan : l'interface ne se fige pas
+        threading.Thread(target=self._download_posters, args=(games,), daemon=True).start()
+        self.after(100, self._poll_posters)
+
+    def add_game(self, game):
         """Ajoute une carte de jeu à la grille."""
         i = len(self.cards)
-        card = GameCard(self.grid_frame, title, rating, platforms, color_top, color_bottom)
+        card = GameCard(self.grid_frame, game)
         card.grid(row=i // self.COLUMNS, column=i % self.COLUMNS, padx=(0, 12), pady=(0, 12))
         self.cards.append(card)
+
+    def _download_posters(self, games):
+        for index, game in enumerate(games):
+            url = game.get("image_url")
+            img = download_image(url) if url else None
+            self.poster_queue.put((index, img))
+
+    def _poll_posters(self):
+        try:
+            while True:
+                index, img = self.poster_queue.get_nowait()
+                if img is not None and index < len(self.cards):
+                    self.cards[index].set_poster(img)
+        except queue.Empty:
+            pass
+        self.after(150, self._poll_posters)
 
 
 # ───────────────────────────────────────────────

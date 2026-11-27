@@ -44,8 +44,7 @@ def get_games():
         return []
 
 def _email(pseudo):
-    return f"{pseudo.strip().lower()}@games-films.app"
-
+    return f"{pseudo.strip().lower()}@gmail.com"
 
 def sign_up(pseudo, password, preference="Les deux"):
     try:
@@ -56,12 +55,13 @@ def sign_up(pseudo, password, preference="Les deux"):
         })
         return True, None
     except Exception as e:
+        print("Erreur inscription :", e)
         return False, str(e)
 
 
 T_USERS = "utilisateurs"
-T_FAV = "favoris"
-T_NOTE = {"film": "critique_film", "jeu": "critique_jeu"}
+T_FAV = "mettre"
+T_NOTE = {"film": "critiquer_film", "jeu": "critiquer_jeu"}
 T_LATER = "a_voir_plus_tard"
 COL = {"film": "id_film", "jeu": "id_jeu"}
 
@@ -90,17 +90,19 @@ def sign_in(pseudo, password):
 
 def get_favorites(kind):
     col = COL[kind]
+    if _user_id is None:      # pas connecté : aucun favori à chercher
+        return set()
     try:
         rows = (client().table(T_FAV).select(col)
-                .eq("id_utilisateur", _user_id).not_.is_(col, "null").execute().data)
-        return {r[col] for r in rows}
+                .eq("id_utilisateur", _user_id).execute().data)
+        return {r[col] for r in rows if r.get(col) is not None}
     except Exception as e:
         print("Erreur get_favorites :", e)
         return set()
 
 
 def toggle_favorite(kind, item_id):
-    """Ajoute ou retire un favori. Renvoie True si c'est maintenant un favori."""
+    """Ajoute ou retire un favori."""
     col = COL[kind]
     try:
         q = client().table(T_FAV).select("id_favori").eq("id_utilisateur", _user_id).eq(col, item_id)
@@ -150,3 +152,30 @@ def add_watchlist(kind, item_id):
     except Exception as e:
         print("Erreur add_watchlist :", e)
         return False
+def get_watchlist(kind):
+    col = COL[kind]
+    if _user_id is None:
+        return set()
+    try:
+        rows = (client().table(T_LATER).select(col)
+                .eq("id_utilisateur", _user_id).execute().data)
+        return {r[col] for r in rows if r.get(col) is not None}
+    except Exception as e:
+        print("Erreur get_watchlist :", e)
+        return set()
+
+
+def toggle_watchlist(kind, item_id):
+    col = COL[kind]
+    try:
+        q = (client().table(T_LATER).select(col)
+             .eq("id_utilisateur", _user_id).eq(col, item_id).execute().data)
+        if q:
+            (client().table(T_LATER).delete()
+             .eq("id_utilisateur", _user_id).eq(col, item_id).execute())
+            return False
+        client().table(T_LATER).insert({"id_utilisateur": _user_id, col: item_id}).execute()
+        return True
+    except Exception as e:
+        print("Erreur toggle_watchlist :", e)
+        return None

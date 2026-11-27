@@ -139,7 +139,6 @@ def get_rating(kind, item_id):
         print("Erreur get_rating :", e)
         return 0
 
-
 def add_watchlist(kind, item_id):
     col = COL[kind]
     try:
